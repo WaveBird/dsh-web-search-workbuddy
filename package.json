@@ -1,7 +1,7 @@
 {
   "name": "dsh-web-search-workbuddy",
   "description": "WorkBuddy gateway-backed search provider (agenttool /v1/tools/search passthrough via the account-pool gateway) for the DeepSeek Harness web capability seam (ctx.web)",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

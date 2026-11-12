@@ -63,11 +63,8 @@ installed this way; `@deepseek-ai/schemastery` ships as a direct dependency.
 - insert:
     - id: web-search-workbuddy
       name: dsh-web-search-workbuddy
-      config:
-        baseURL: http://127.0.0.1:7864          # workbuddy-manager address
-        apiKeyEnv: WORKBUDDY_MANNAGER_CN_API_KEY # same wbk_ key as the chat route
-        timeoutMs: 30000
-        maxResults: 5
+      # No baseURL / apiKeyEnv needed: both derive from the conversation's own
+      # model-provider route (its apiKeyEnv credential + baseURL with /v1/ stripped).
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
@@ -81,6 +78,21 @@ installed this way; `@deepseek-ai/schemastery` ships as a direct dependency.
 
 Fully restart `dsh web` afterwards (patch changes do not HMR). The model's tool
 catalog gains `web_search` in new sessions.
+
+### Zero-config credential derivation
+
+With no explicit config, the plugin reads the **model provider route the
+conversation is already using** (e.g. `workbuddy-mannager-cn` registered under
+`llm-pi-ai`): its `apiKeyEnv` credential reference is resolved for the search
+request, and its `baseURL` minus the `/v1/` suffix becomes the search origin —
+the search endpoint lives on the same manager host (`/v1/tools/search` beside
+`/v1/chat/completions`). Same mechanism as the official
+`@deepseek-ai/dsh-web-deepseek-api` (`listConfigurableProviders` → loader
+entries → effective config).
+
+Explicit `baseURL` / `apiKeyEnv` still win when set — for deployments whose
+search endpoint differs from the chat route, or whose model key cannot reach
+the search route.
 
 ## Protocol
 
