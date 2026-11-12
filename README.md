@@ -64,8 +64,8 @@ installed this way; `@deepseek-ai/schemastery` ships as a direct dependency.
 - insert:
     - id: web-search-workbuddy
       name: dsh-web-search-workbuddy
-      # No baseURL / apiKeyEnv needed: both derive from the conversation's own
-      # model-provider route (its apiKeyEnv credential + baseURL with /v1/ stripped).
+      # No config needed: baseURL + apiKeyEnv derive from the conversation's
+      # model-provider route automatically.
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
