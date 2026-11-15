@@ -1,5 +1,7 @@
 // 功能验证：mock 网关 + 假 ctx，走完整的 apply → ready → search 链路。
-// 覆盖两条解析路径：零配置自动派生（route profile）与显式配置。
+// 覆盖两条解析路径：零配置自动派生（route profile）与显式配置，以及
+// v0.4.0 新增的 agenttool 全参数（type/max_results/allowed_domains/
+// blocked_domains/freshness）在 wire body 上的透传、覆盖与校验。
 // 运行：node test/run.mjs
 import { createServer } from "node:http";
 import assert from "node:assert";
@@ -39,6 +41,8 @@ const gw = createServer((req, res) => {
       res.end(JSON.stringify({ code: 15001, msg: "quota_web_search" }));
     } else if (mode === "down") {
       res.destroy();
+    } else if (mode === "hang") {
+      // 故意不响应：用于 timeoutMs 分支（客户端自行超时）。
     }
   });
 });
@@ -56,10 +60,12 @@ const routeProfile = {
   baseURL: `${gatewayOrigin}/v1/`,
 };
 
-function makeCtx({ withSessionRoute = true, credentialValue = KEY } = {}) {
+function makeCtx({ withSessionRoute = true, credentialValue = KEY, toolHarness = undefined } = {}) {
   const registered = [];
   const ctx = {
     get(service) {
+      if (service === "tools" && toolHarness !== undefined) return toolHarness.tools;
+      if (service === "systemPrompt" && toolHarness !== undefined) return toolHarness.systemPrompt;
       if (service === "credentials") {
         return {
           resolve: async (ref) => ({ value: credentialValue === null ? undefined : credentialValue }),
@@ -93,17 +99,45 @@ function makeCtx({ withSessionRoute = true, credentialValue = KEY } = {}) {
       }
       return undefined;
     },
-    web: { registerSearchProvider: (p) => registered.push(p) },
+    web: {
+      registerSearchProvider: (p) => registered.push(p),
+      search: (request, signal) => registered[0].search(request, signal),
+      searchReady: async (llmProvider) => registered[0].ready(llmProvider),
+    },
+    inject: (deps, callback) => callback(ctx),
   };
   return { ctx, registered };
 }
 
-const cfgOf = (over = {}) => ({
-  baseURL: { get: () => over.baseURL },
-  apiKeyEnv: { get: () => over.apiKeyEnv },
-  timeoutMs: { get: () => 5000 },
-  maxResults: { get: () => 5 },
-});
+// 用真实 Config 生成 schemastery 配置对象（每个字段是 {get()} 包装），
+// 再叠加测试覆盖；与 cordis 注入到 apply() 的形态一致。
+const cfgOf = (over = {}) => {
+  const raw = Config({
+    ...(over.baseURL !== undefined ? { baseURL: over.baseURL } : {}),
+    ...(over.apiKeyEnv !== undefined ? { apiKeyEnv: over.apiKeyEnv } : {}),
+    ...(over.type !== undefined ? { type: over.type } : {}),
+    ...(over.allowedDomains !== undefined ? { allowedDomains: over.allowedDomains } : {}),
+    ...(over.blockedDomains !== undefined ? { blockedDomains: over.blockedDomains } : {}),
+    ...(over.freshness !== undefined ? { freshness: over.freshness } : {}),
+    ...(over.maxResults !== undefined ? { maxResults: over.maxResults } : {}),
+    ...(over.modelControlled !== undefined ? { modelControlled: over.modelControlled } : {}),
+    ...(over.modelMaxQueries !== undefined ? { modelMaxQueries: over.modelMaxQueries } : {}),
+    ...(over.modelSummaryMaxChars !== undefined ? { modelSummaryMaxChars: over.modelSummaryMaxChars } : {}),
+  });
+  // 测试里统一固定超时，避免 hang 分支拖慢整套用例。
+  return {
+    ...raw,
+    timeoutMs: { get: () => over.timeoutMs ?? 5000 },
+    maxResults: { get: () => over.maxResults ?? 5 },
+  };
+};
+
+// apply 的 config 是 schemastery 对象（每个字段是 {get()} 包装），cfgOf 已对齐。
+function register(over) {
+  const { ctx, registered } = makeCtx();
+  apply(ctx, cfgOf(over));
+  return registered[0];
+}
 
 // =========================================================================
 console.log("== A. 零配置自动派生（路由 profile → apiKeyEnv + baseURL） ==");
@@ -119,9 +153,14 @@ console.log("== A. 零配置自动派生（路由 profile → apiKeyEnv + baseUR
   assert.equal(lastReq.path, "/v1/tools/search");
   assert.equal(lastReq.auth, `Bearer ${KEY}`);
   assert.equal(lastReq.body.query, "go generics");
+  assert.equal(lastReq.body.type, "text2text", "agenttool type 默认 text2text");
+  assert.equal(lastReq.body.max_results, 5);
+  assert.equal("allowed_domains" in lastReq.body, false, "空 allowed_domains 省略");
+  assert.equal("blocked_domains" in lastReq.body, false, "空 blocked_domains 省略");
+  assert.equal("freshness" in lastReq.body, false, "未配置 freshness 省略");
   assert.equal(out.sources.length, 1, "url filter + dedupe");
   assert.equal(out.sources[0].url, "https://go.dev/blog/generics");
-  console.log("✓ 自动派生：apiKeyEnv + baseURL(from /v1/ strip) + search OK");
+  console.log("✓ 自动派生：apiKeyEnv + baseURL(from /v1/ strip) + 全参数默认形态 + search OK");
 }
 
 {
@@ -141,6 +180,101 @@ console.log("\n== B. 显式配置覆盖（仍支持） ==");
   const out = await p.search({ query: "explicit cfg" });
   assert.equal(lastReq.body.query, "explicit cfg");
   console.log("✓ 显式 baseURL + apiKeyEnv 仍生效");
+}
+
+console.log("\n== B2. agenttool 全参数（Config 默认值 → wire body） ==");
+{
+  const p = register({
+    type: "text2text",
+    maxResults: 7,
+    allowedDomains: ["https://go.dev/docs/", "blog.golang.org", " go.dev ", "GO.DEV"],
+    blockedDomains: ["https://reddit.com/r/golang", " .stackoverflow.com ", "", "reddit.com"],
+    freshness: "m1",
+  });
+  await p.search({ query: "go generics" });
+  assert.deepEqual(lastReq.body, {
+    query: "go generics",
+    type: "text2text",
+    max_results: 7,
+    allowed_domains: ["go.dev", "blog.golang.org"],       // 去 scheme/path + 去重
+    blocked_domains: ["reddit.com", "stackoverflow.com"], // 同上，去空项
+    freshness: "m1",
+  });
+  console.log("✓ type/max_results/allowed_domains/blocked_domains/freshness 全部落进请求体，域名归一化 + 去重");
+}
+
+{
+  // Config schema 的 freshness 枚举校验
+  assert.throws(() => Config({ freshness: "forever" }), /d1.*m1.*y1|expected/);
+  assert.doesNotThrow(() => Config({ freshness: "d1" }));
+  console.log("✓ Config.freshness 枚举：d1/m1/y1 接受，非法值拒绝");
+}
+
+console.log("\n== B3. 每请求覆盖（camelCase 与 snake_case 两种写法） ==");
+{
+  const p = register({
+    type: "text2text",
+    maxResults: 5,
+    allowedDomains: ["default.example"],
+    blockedDomains: ["default-blacklist.example"],
+    freshness: "y1",
+  });
+  await p.search({
+    query: "override cfg",
+    type: "text2text",
+    maxResults: 3,
+    allowedDomains: ["camel.example"],
+    blockedDomains: ["camel-block.example"],
+    freshness: "d1",
+  });
+  assert.deepEqual(lastReq.body, {
+    query: "override cfg",
+    type: "text2text",
+    max_results: 3,
+    allowed_domains: ["camel.example"],
+    blocked_domains: ["camel-block.example"],
+    freshness: "d1",
+  }, "camelCase 覆盖优先于 Config");
+
+  await p.search({
+    query: "snake override",
+    max_results: 12,
+    allowed_domains: ["snake.example"],
+    blocked_domains: ["snake-block.example"],
+    freshness: "m1",
+  });
+  assert.deepEqual(lastReq.body.allowed_domains, ["snake.example"], "snake_case 字段同样生效");
+  assert.deepEqual(lastReq.body.blocked_domains, ["snake-block.example"]);
+  assert.equal(lastReq.body.max_results, 12);
+  assert.equal(lastReq.body.freshness, "m1");
+  console.log("✓ 请求级覆盖（camelCase / snake_case）均优先于 Config 默认值");
+}
+
+console.log("\n== B4. 边界与校验 ==");
+{
+  const p = register({});
+  await p.search({ query: "clamp high", maxResults: 999 });
+  assert.equal(lastReq.body.max_results, 20, "max_results 上限 20（0057 网关约束）");
+  await p.search({ query: "clamp low", maxResults: -3 });
+  assert.equal(lastReq.body.max_results, 5, "非法值回退到 Config 默认 5");
+  console.log("✓ max_results 钳制到 1..20，非法值回退默认值");
+}
+{
+  const p = register({});
+  await assert.rejects(
+    () => p.search({ query: "bad freshness", freshness: "forever" }),
+    (e) => e instanceof WebError && e.code === "WEB_PROVIDER_ERROR" && /freshness/.test(e.message),
+  );
+  console.log("✓ 非法 freshness → WEB_PROVIDER_ERROR（不发出请求）");
+}
+{
+  // 脏的运行时配置（绕过 Config schema 直接注入）：非数组域名应被安全忽略
+  const { ctx, registered } = makeCtx();
+  apply(ctx, { ...cfgOf(), blockedDomains: { get: () => "not-an-array" } });
+  const p = registered[0];
+  await p.search({ query: "robust" });
+  assert.equal("blocked_domains" in lastReq.body, false);
+  console.log("✓ 非数组域名配置被安全忽略");
 }
 
 console.log("\n== C. 错误路径 ==");
@@ -213,6 +347,19 @@ console.log("\n== C. 错误路径 ==");
 }
 
 {
+  // timeoutMs 生效（网关挂起不响应）
+  mode = "hang";
+  const { ctx, registered } = makeCtx();
+  apply(ctx, cfgOf({ timeoutMs: 120 }));
+  const p = registered[0];
+  await assert.rejects(
+    () => p.search({ query: "q" }),
+    (e) => e instanceof WebError && /timed out/.test(e.message),
+  );
+  console.log("✓ timeoutMs 超时 → WEB_PROVIDER_ERROR(timed out)");
+}
+
+{
   // 取消
   mode = "ok";
   const { ctx, registered } = makeCtx();
@@ -225,6 +372,83 @@ console.log("\n== C. 错误路径 ==");
     (e) => e instanceof WebError && e.code === "WEB_ABORTED",
   );
   console.log("✓ aborted signal → WEB_ABORTED");
+}
+
+console.log("\n== D. modelControlled：模型可自主传过滤参数 ==");
+{
+  mode = "ok";
+  const toolDefs = [];
+  const promptSections = [];
+  const toolHarness = {
+    tools: {
+      register: (def, opts) => { toolDefs.push({ def, opts }); return () => {}; },
+    },
+    systemPrompt: {
+      section: (s) => { promptSections.push(s); return () => {}; },
+      getSectionOrder: () => 2000,
+    },
+  };
+  const { ctx } = makeCtx({ toolHarness });
+  apply(ctx, cfgOf({ modelControlled: true, maxResults: 5 }));
+
+  assert.equal(toolDefs.length, 1, "注册了插件自有 web_search");
+  const tool = toolDefs[0].def;
+  assert.equal(tool.name, "web_search");
+  assert.equal(typeof toolDefs[0].opts.when, "function", "带 searchReady 激活条件");
+  for (const key of ["allowedDomains", "blockedDomains", "freshness", "maxResults"]) {
+    assert.ok(tool.parameters.properties[key], `参数 schema 暴露 ${key}`);
+  }
+  assert.equal(tool.parameters.additionalProperties, false, "拒绝未知字段");
+  assert.equal(promptSections.length, 1, "注册了模型提示段");
+  assert.match(promptSections[0].text, /allowedDomains/);
+
+  // 模型传入过滤参数 → execute 把它们放进 ctx.web.search() 的 request → 落进 wire body
+  const out = await tool.execute({
+    queries: ["model controlled"],
+    allowedDomains: ["go.dev"],
+    blockedDomains: ["reddit.com"],
+    freshness: "d1",
+    maxResults: 3,
+  }, { signal: new AbortController().signal });
+  assert.deepEqual(lastReq.body, {
+    query: "model controlled",
+    type: "text2text",
+    max_results: 3,
+    allowed_domains: ["go.dev"],
+    blocked_domains: ["reddit.com"],
+    freshness: "d1",
+  });
+  assert.equal(out.sources.length, 1, "结果映射正常");
+  assert.equal(out.truncated, false);
+
+  // render / presentationMeta / presentResult 全链路
+  const blocks = tool.output.render({}, out);
+  assert.equal(blocks[0].type, "text");
+  assert.match(blocks[0].text, /Sources:/);
+  const meta = tool.output.presentationMeta({}, out);
+  assert.equal(meta.sources.length, 1);
+  const view = tool.presentResult({ queries: ["model controlled"] }, { isError: false, meta });
+  assert.equal(view.card, "web");
+  assert.equal(view.kind, "search");
+
+  // 非法参数在 execute 层被拒，不发请求
+  await assert.rejects(
+    () => tool.execute({ queries: ["x"], freshness: "forever" }, { signal: new AbortController().signal }),
+    /freshness must be one of/,
+  );
+  await assert.rejects(
+    () => tool.execute({ queries: [] }, { signal: new AbortController().signal }),
+    /queries must contain at least one query/,
+  );
+  console.log("✓ 模型级 allowedDomains/blockedDomains/freshness/maxResults → wire body；schema/展示/校验均通过");
+}
+
+{
+  // 默认关闭：不触碰 tools/systemPrompt
+  const { ctx, registered } = makeCtx();
+  assert.doesNotThrow(() => apply(ctx, cfgOf()));
+  assert.equal(registered.length, 1, "只注册 provider");
+  console.log("✓ modelControlled 默认 false，不注册重复工具");
 }
 
 gw.close();
