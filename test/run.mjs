@@ -77,6 +77,9 @@ function makeCtx({ withSessionRoute = true, credentialValue = KEY, toolHarness =
         return {
           listProviders: () => [{ id: ROUTE, name: ROUTE }],
           listConfigurableProviders: () => [
+            // 模拟真实 dsh-llm-pi-ai：同时列出未配置的内置目录 provider 与已配置的路由
+            { provider: "openai", settingsNs: "llm-pi-ai", settingsPath: ["providers", "openai"] },
+            { provider: "anthropic", settingsNs: "llm-pi-ai", settingsPath: ["providers", "anthropic"] },
             { provider: ROUTE, settingsNs: "llm-pi-ai", settingsPath: ["providers", ROUTE] },
           ],
         };
@@ -84,8 +87,11 @@ function makeCtx({ withSessionRoute = true, credentialValue = KEY, toolHarness =
       if (service === "loader") {
         return {
           entries: () => [
-            { options: { id: "llm-pi-ai", name: "@deepseek-ai/dsh-llm-pi-ai" },
-              fiber: { state: 2, effectiveConfig: { providers: { [ROUTE]: routeProfile } } } },
+            {
+              options: { id: "llm-pi-ai", name: "@deepseek-ai/dsh-llm-pi-ai" },
+              // 真实 dsh-llm-pi-ai 中 providers 是 .volatile()，effectiveConfig.providers 为 { get() } 包装
+              fiber: { state: 2, effectiveConfig: { providers: { get: () => ({ [ROUTE]: routeProfile }) } } },
+            },
           ],
         };
       }
@@ -450,6 +456,137 @@ console.log("\n== D. modelControlled：模型可自主传过滤参数 ==");
   assert.doesNotThrow(() => apply(ctx, cfgOf()));
   assert.equal(registered.length, 1, "只注册 provider");
   console.log("✓ modelControlled 默认 false，不注册重复工具");
+}
+
+console.log("\n== D2. modelControlled：agent.ctx 局部遮蔽（兼容 preset 内置 tool-web） ==");
+{
+  mode = "ok";
+  const globalRegistered = [];
+  const agentRegistered = [];
+  const agentPrompts = [];
+  const listeners = new Map();
+  const toolHarness = {
+    tools: {
+      // 模拟根级已有官方 tool-web 注册的 web_search
+      get: (name) => (name === "web_search" ? { name: "web_search" } : undefined),
+      register: (def, opts) => {
+        globalRegistered.push({ def, opts });
+        throw new Error('tool "web_search" is already registered');
+      },
+    },
+    systemPrompt: {
+      section: () => () => {},
+    },
+  };
+  const { ctx } = makeCtx({ toolHarness });
+  ctx.on = (event, fn) => {
+    listeners.set(event, fn);
+    return () => listeners.delete(event);
+  };
+  assert.doesNotThrow(() => apply(ctx, cfgOf({ modelControlled: true, maxResults: 5 })));
+  assert.equal(globalRegistered.length, 0, "根级已存在 web_search 时跳过全局重复注册");
+  assert.equal(typeof listeners.get("agent/created"), "function", "已监听 agent/created");
+
+  // 触发新会话 agent/created → 应在 agent.ctx 注册 5 参数 web_search 遮蔽 preset
+  const fakeAgent = {
+    id: "session-test-1",
+    ctx: {
+      get(service) {
+        if (service === "tools") {
+          return {
+            register: (def, opts) => { agentRegistered.push({ def, opts }); return () => {}; },
+          };
+        }
+        if (service === "systemPrompt") {
+          return {
+            section: (s) => { agentPrompts.push(s); return () => {}; },
+          };
+        }
+        return undefined;
+      },
+    },
+  };
+  listeners.get("agent/created")({ agent: fakeAgent });
+  assert.equal(agentRegistered.length, 1, "agent.ctx 成功注册 5 参数 web_search");
+  assert.equal(agentRegistered[0].def.name, "web_search");
+  for (const key of ["queries", "allowedDomains", "blockedDomains", "freshness", "maxResults"]) {
+    assert.ok(agentRegistered[0].def.parameters.properties[key], `agent.ctx 工具暴露 ${key}`);
+  }
+  assert.equal(agentPrompts.length, 1, "agent.ctx 同步注入提示词段");
+  console.log("✓ agent/created 在 agent.ctx 注册 5 参数 web_search，遮蔽 preset/根级 1 参数工具且无重复报错");
+}
+
+console.log("\n== D3. 非 pi-ai 会话路由回退 + 单侧显式 apiKeyEnv ==");
+{
+  const { ctx, registered } = makeCtx();
+  // 模拟会话切换到 deepseek-official（非 llm-pi-ai 路由），但 llm-pi-ai 里唯一配置了 workbuddy-mannager-cn
+  const origGet = ctx.get.bind(ctx);
+  ctx.get = (svc) => {
+    if (svc === "agents") {
+      return {
+        currentInitiator: () => ({
+          session: { requestContext: () => ({ provider: "deepseek-official" }) },
+        }),
+      };
+    }
+    return origGet(svc);
+  };
+  apply(ctx, cfgOf());
+  const p = registered[0];
+  assert.equal(await p.ready("deepseek-official"), true, "切到非 pi-ai 模型时仍回退到唯一 pi-ai 路由");
+  const out = await p.search({ query: "fallback route" });
+  assert.equal(out.sources.length, 1);
+  console.log("✓ 非 pi-ai 会话路由自动回退唯一 llm-pi-ai 路由，ready() 与 search() 均正常");
+}
+
+{
+  // 仅显式配置 apiKeyEnv（省略 baseURL 且无 llm 服务）：ready() 应返回 true，且 baseURL 兜底 http://127.0.0.1:7864
+  const { ctx, registered } = makeCtx({ withSessionRoute: false });
+  const origGet = ctx.get.bind(ctx);
+  ctx.get = (svc) => (svc === "llm" ? undefined : origGet(svc));
+  apply(ctx, cfgOf({ apiKeyEnv: "WORKBUDDY_MANNAGER_CN_API_KEY" }));
+  const p = registered[0];
+  assert.equal(await p.ready(), true, "单侧显式 apiKeyEnv 时 ready() 为 true");
+
+  const origFetch = globalThis.fetch;
+  let capturedUrl = null;
+  globalThis.fetch = async (url) => {
+    capturedUrl = String(url);
+    return new Response(searchOK, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const out = await p.search({ query: "default base url" });
+    assert.equal(capturedUrl, "http://127.0.0.1:7864/v1/tools/search", "缺省 baseURL 兜底 http://127.0.0.1:7864");
+    assert.equal(out.sources.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  console.log("✓ 单侧显式 apiKeyEnv：ready() 为 true，baseURL 兜底 http://127.0.0.1:7864");
+}
+
+console.log("\n== D4. blockedDomains 本地结果后过滤（精确域名 + 子域名） ==");
+{
+  const p = register({});
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    code: 0,
+    msg: "",
+    results: [
+      { title: "Exact blocked", url: "https://artificialintelligence-news.com/", snippet: "blocked" },
+      { title: "Subdomain blocked", url: "https://www.wikiwand.com/zh-hant/articles/Hello,_world", snippet: "blocked" },
+      { title: "Kept", url: "https://go.dev/blog/generics", snippet: "kept" },
+    ],
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const out = await p.search({
+      query: "hello world",
+      blockedDomains: ["artificialintelligence-news.com", "wikiwand.com"],
+    });
+    assert.deepEqual(out.sources.map((s) => s.url), ["https://go.dev/blog/generics"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  console.log("✓ blockedDomains 同时在结果侧过滤精确域名与 www. 等子域名");
 }
 
 console.log("\n== E. peerDependencies 范围约束（避免精确钉死单一 DSH rc） ==");
