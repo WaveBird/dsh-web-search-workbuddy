@@ -4,6 +4,7 @@
 // blocked_domains/freshness）在 wire body 上的透传、覆盖与校验。
 // 运行：node test/run.mjs
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { PROVIDER_ID, apply, Config } from "../lib/index.js";
 import { WebError } from "@deepseek-ai/dsh-web";
@@ -449,6 +450,17 @@ console.log("\n== D. modelControlled：模型可自主传过滤参数 ==");
   assert.doesNotThrow(() => apply(ctx, cfgOf()));
   assert.equal(registered.length, 1, "只注册 provider");
   console.log("✓ modelControlled 默认 false，不注册重复工具");
+}
+
+console.log("\n== E. peerDependencies 范围约束（避免精确钉死单一 DSH rc） ==");
+{
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  for (const dep of ["@deepseek-ai/dsh-web", "@deepseek-ai/dsh-credentials"]) {
+    const range = pkg.peerDependencies?.[dep];
+    assert.equal(typeof range, "string", `${dep} 必须在 peerDependencies 中声明`);
+    assert.match(range, /^>=0\.2\.2-rc\.\d+\s+<0\.3\.0-0$/, `${dep} 应使用覆盖 0.2.x 且排除 0.3.0 prerelease 的 semver 范围，实际: ${range}`);
+  }
+  console.log("✓ @deepseek-ai/dsh-web 与 @deepseek-ai/dsh-credentials 使用 semver 范围而非精确 rc 版本");
 }
 
 gw.close();

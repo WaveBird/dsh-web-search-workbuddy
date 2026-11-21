@@ -38,7 +38,7 @@ expecting the gateway key):
 |---|---|---|
 | **workbuddy-manager** | **≥ the `feat/web-search-passthrough` branch** ([PR #2](https://github.com/WaveBird/workbuddy-manager/pull/2), upstream [PR #430](https://github.com/ithtelab/workbuddy-manager/pull/430)). Baseline tested: `v2.11.14` + the PR's 3 commits (`dce9acc` route, `5e88629` realm fix, `c33e122` docs). For the v0.4.0 full-parameter set also take the small API follow-up: `/v1/tools/search` validates `type`/`max_results`/`allowed_domains`/`blocked_domains`/`freshness` and forwards the body verbatim. It will ship in a release **after v2.11.14** — until then, deploy the branch or cherry-pick. | The `POST /v1/tools/search` passthrough route **does not exist** in upstream releases ≤ v2.11.14. Older managers return `405` and this provider cannot work through them. |
 | **workbuddy2api-go gateway** | Built from the upstream snapshot **`upstream-id 801cebba` (v2.11.14 / 0056 patches)** plus [`0057-web-search-tool.patch`](https://github.com/WaveBird/workbuddy-manager/blob/feat/web-search-passthrough/dev/upstream-patches/0057-web-search-tool.patch) (shipped inside the manager PR above). | The `POST /v1/tools/search` handler, account-pool rotation, and 15001 quota cooldown live in this patch; the stock gateway has no agenttool route. |
-| **DeepSeek Harness (DSH)** | `0.2.2-rc.2` (web seam contract `ctx.web.registerSearchProvider` / `WebSearchProvider` shape). Tested against `0.2.2-rc.1` and `rc.2`; any version keeping that seam shape works. | The provider registers into `ctx.web`; a breaking seam change would require a plugin update. |
+| **DeepSeek Harness (DSH)** | `>=0.2.2-rc.1 <0.3.0-0` (web seam contract `ctx.web.registerSearchProvider` / `WebSearchProvider` shape). Verified against `0.2.2-rc.1` through `0.2.2-rc.5`; any `0.2.x` version keeping that seam shape works. | The provider registers into `ctx.web`; a breaking seam change (e.g. `0.3.x`) would require a plugin update. |
 | **Realm coverage (CN + Global)** | Both realms supported. The gateway routes agenttool by account realm (CN → `www.workbuddy.cn`, Global → `www.workbuddy.ai`, both endpoints probe-verified) — a `global:`-realm key (WorkBuddy AI / international) searches the same way as CN. The plugin itself is realm-agnostic: it follows whatever model route the conversation uses. | International accounts participate in the same account-pool rotation and 15001 quota cooldown as CN. |
 
 Quick self-check per component:
@@ -58,9 +58,14 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:7863/v1/tools/
 ## Install
 
 ```bash
-npm install dsh-web-search-workbuddy
-# or inside the DSH profile (recommended):
+# Recommended: via the DSH plugin CLI (pass --profile <name> if not using the default profile):
+dsh plugin add dsh-web-search-workbuddy
+# e.g. for the `web` profile:
+dsh plugin --profile web add dsh-web-search-workbuddy
+
+# Or directly via pnpm / npm:
 cd ~/.dsh/profiles/web && pnpm add dsh-web-search-workbuddy
+npm install dsh-web-search-workbuddy
 ```
 
 Peer dependencies (`@deepseek-ai/dsh-web`, `@deepseek-ai/dsh-credentials`,
