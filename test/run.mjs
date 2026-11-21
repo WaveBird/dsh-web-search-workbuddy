@@ -77,6 +77,9 @@ function makeCtx({ withSessionRoute = true, credentialValue = KEY, toolHarness =
         return {
           listProviders: () => [{ id: ROUTE, name: ROUTE }],
           listConfigurableProviders: () => [
+            // 模拟真实 dsh-llm-pi-ai：同时列出未配置的内置目录 provider 与已配置的路由
+            { provider: "openai", settingsNs: "llm-pi-ai", settingsPath: ["providers", "openai"] },
+            { provider: "anthropic", settingsNs: "llm-pi-ai", settingsPath: ["providers", "anthropic"] },
             { provider: ROUTE, settingsNs: "llm-pi-ai", settingsPath: ["providers", ROUTE] },
           ],
         };
@@ -84,8 +87,11 @@ function makeCtx({ withSessionRoute = true, credentialValue = KEY, toolHarness =
       if (service === "loader") {
         return {
           entries: () => [
-            { options: { id: "llm-pi-ai", name: "@deepseek-ai/dsh-llm-pi-ai" },
-              fiber: { state: 2, effectiveConfig: { providers: { [ROUTE]: routeProfile } } } },
+            {
+              options: { id: "llm-pi-ai", name: "@deepseek-ai/dsh-llm-pi-ai" },
+              // 真实 dsh-llm-pi-ai 中 providers 是 .volatile()，effectiveConfig.providers 为 { get() } 包装
+              fiber: { state: 2, effectiveConfig: { providers: { get: () => ({ [ROUTE]: routeProfile }) } } },
+            },
           ],
         };
       }
