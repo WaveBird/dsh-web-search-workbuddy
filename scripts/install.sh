@@ -12,7 +12,8 @@ DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
 PROFILE=""
 USE_GITHUB=0
-MODEL_CONTROLLED=0
+CUSTOM_PKG=""
+MODEL_CONTROLLED=1
 NO_RESTART=0
 SKIP_NETWORK_CHECK=0
 
@@ -26,7 +27,9 @@ dsh-web-search-workbuddy 一键安装与配置脚本（macOS / Linux）
 选项:
   --profile <name>      指定目标 DSH profile（默认自动检测 ~/.dsh/profiles，仅有一个时自动选用）
   --github              从 GitHub main 分支安装，而非 npm 正式版
-  --model-controlled    启用 modelControlled: true（模型自主控制搜索过滤参数）
+  --pkg <spec>          指定自定义包来源（例如 github:WaveBird/dsh-web-search-workbuddy#分支名 或本地路径）
+  --model-controlled    启用 modelControlled: true（默认已开启，模型可见全部 5 个搜索参数）
+  --provider-only       仅注册底层搜索 provider，保留官方 1 参数 web_search（modelControlled: false）
   --no-restart          完成安装和配置后不询问重启
   --skip-network-check  跳过安装前的在线源连通性预检
   -h, --help            显示此帮助信息
@@ -47,8 +50,20 @@ while [ $# -gt 0 ]; do
       USE_GITHUB=1
       shift
       ;;
+    --pkg)
+      if [ $# -lt 2 ]; then
+        echo "错误: --pkg 需要指定包名、GitHub 引用或路径" >&2
+        exit 1
+      fi
+      CUSTOM_PKG="$2"
+      shift 2
+      ;;
     --model-controlled)
       MODEL_CONTROLLED=1
+      shift
+      ;;
+    --provider-only)
+      MODEL_CONTROLLED=0
       shift
       ;;
     --no-restart)
@@ -386,7 +401,9 @@ fi
 # 阶段 3：通过 dsh plugin add 在线安装插件
 # =========================================================================
 PKG_SPEC="$PKG_NPM"
-if [ "$USE_GITHUB" -eq 1 ]; then
+if [ -n "$CUSTOM_PKG" ]; then
+  PKG_SPEC="$CUSTOM_PKG"
+elif [ "$USE_GITHUB" -eq 1 ]; then
   PKG_SPEC="$PKG_GITHUB"
 fi
 
@@ -502,9 +519,7 @@ fi
 
 ok "配置校验通过：已关闭默认 DSH 搜索并切换至 workbuddy-gateway。"
 if [ "$MODEL_CONTROLLED" -eq 1 ]; then
-  warn_with_guide \
-    "已开启 modelControlled: true。" \
-    "如果你还启用了自定义 agent preset，请确认其中 @deepseek-ai/dsh-tool-web 也已设置 search: false，避免 web_search 重复注册。"
+  ok "已开启 modelControlled: true（模型可自主使用 queries / allowedDomains / blockedDomains / freshness / maxResults 全部 5 个参数）。"
 fi
 
 # =========================================================================

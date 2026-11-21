@@ -64,9 +64,9 @@ scripts\install.bat
 # CMD:
 scripts\install.bat --profile desktop
 
-# 开启模型自主控制过滤参数模式（modelControlled: true）
-./scripts/install.sh --model-controlled
-# PowerShell: .\scripts\install.ps1 -ModelControlled
+# 仅注册底层搜索 provider，保留官方 1 参数 web_search（默认脚本已开启 5 参数 modelControlled: true）
+./scripts/install.sh --provider-only
+# PowerShell: .\scripts\install.ps1 -ProviderOnly
 
 # 从 GitHub main 分支安装最新代码（不走 npm）
 ./scripts/install.sh --github
@@ -176,7 +176,7 @@ DSH 默认启用了官方 DeepSeek 搜索提供器（`web-search-deepseek`、`we
 
 DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。开启 `modelControlled: true` 后，本插件会接管 `web_search` 工具注册，把 `allowedDomains` / `blockedDomains` / `freshness` / `maxResults` 开放给模型按需传入，并自动注入对应的系统提示词说明。
 
-> **⚠️ 重要**：由于 `ctx.tools.register()` 不允许同名工具重复注册，开启 `modelControlled: true` 时，**除了关闭上述默认搜索提供器外，还必须将根级以及所有 agent preset（如 `preset-standard` 等）中的 `@deepseek-ai/dsh-tool-web` 均设为 `search: false`**（`fetch: true` 保留不变，不影响 `web_fetch`）。
+> **💡 工作原理**：开启 `modelControlled: true` 后，本插件会同时在每个会话的 `agent.ctx` 作用域内注册 5 参数版 `web_search`，自动遮蔽 `preset-standard` / `preset-ptc` / `preset-cordis` 以及根级 `tool-web` 的 1 参数版本，**无需再手动逐个修改每个 agent preset 的配置**（也不会报重复注册错误），`web_fetch` 保持不受影响。
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml
@@ -206,7 +206,7 @@ DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。
     fetchProvider: http
     searchProvider: workbuddy-gateway
 
-# 4. 必须关闭官方 tool-web 的 search（所有 agent preset 中同样需要 search: false）
+# 4. 根级 tool-web 关闭 search，保留 fetch: true（各 agent preset 会由本插件在 agent.ctx 中自动遮蔽）
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
   config:

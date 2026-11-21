@@ -15,7 +15,9 @@
 param(
   [string]$Profile = "",
   [switch]$Github,
+  [string]$Pkg = "",
   [switch]$ModelControlled,
+  [switch]$ProviderOnly,
   [switch]$NoRestart,
   [switch]$SkipNetworkCheck,
   [switch]$Help
@@ -46,7 +48,9 @@ dsh-web-search-workbuddy 一键安装与配置脚本（Windows PowerShell）
 选项:
   -Profile <name>      指定目标 DSH profile（默认自动检测 %USERPROFILE%\.dsh\profiles，仅有一个时自动选用）
   -Github              从 GitHub main 分支安装，而非 npm 正式版
-  -ModelControlled     启用 modelControlled: true（模型自主控制搜索过滤参数）
+  -Pkg <spec>          指定自定义包来源（例如 github:WaveBird/dsh-web-search-workbuddy#分支名）
+  -ModelControlled     启用 modelControlled: true（默认已开启，模型可见全部 5 个搜索参数）
+  -ProviderOnly        仅注册底层搜索 provider，保留官方 1 参数 web_search（modelControlled: false）
   -NoRestart           完成安装和配置后不询问重启
   -SkipNetworkCheck    跳过安装前的在线源连通性预检
   -Help                显示此帮助信息
@@ -339,7 +343,7 @@ fetch(target, {
 # =========================================================================
 # 阶段 3：通过 dsh plugin add 在线安装插件
 # =========================================================================
-$PkgSpec = if ($Github) { $PkgGithub } else { $PkgNpm }
+$PkgSpec = if (-not [string]::IsNullOrWhiteSpace($Pkg)) { $Pkg } elseif ($Github) { $PkgGithub } else { $PkgNpm }
 Write-Info "步骤 3/5：正在安装插件 ($DshBin plugin --profile $Profile add $PkgSpec)..."
 & $DshBin plugin --profile $Profile add $PkgSpec
 if ($LASTEXITCODE -ne 0) {
@@ -432,7 +436,8 @@ const next = trimmed.length > 0
 fs.writeFileSync(patchFile, next, 'utf8');
 '@
 
-$mcFlag = if ($ModelControlled) { "1" } else { "0" }
+$useModelControlled = -not $ProviderOnly
+$mcFlag = if ($useModelControlled) { "1" } else { "0" }
 $patchRes = Invoke-NodeScript -Code $patchCode -ScriptArgs @($PatchFile, $mcFlag)
 if ($patchRes.ExitCode -ne 0) {
   if ($BackupFile -and (Test-Path -LiteralPath $BackupFile)) {
@@ -464,10 +469,8 @@ if ($dumpOutput -match 'disabling profile plugin.*web-search-workbuddy|dsh-web-s
 }
 
 Write-Ok "配置校验通过：已关闭默认 DSH 搜索并切换至 workbuddy-gateway。"
-if ($ModelControlled) {
-  Warn-WithGuide `
-    "已开启 modelControlled: true。" `
-    "如果你还启用了自定义 agent preset，请确认其中 @deepseek-ai/dsh-tool-web 也已设置 search: false，避免 web_search 重复注册。"
+if ($useModelControlled) {
+  Write-Ok "已开启 modelControlled: true（模型可自主使用 queries / allowedDomains / blockedDomains / freshness / maxResults 全部 5 个参数）。"
 }
 
 # =========================================================================

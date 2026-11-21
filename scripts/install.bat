@@ -63,6 +63,38 @@ if /I "%~1"=="-ModelControlled" (
   shift
   goto :parse_args
 )
+if /I "%~1"=="--provider-only" (
+  set "PS_ARGS=!PS_ARGS! -ProviderOnly"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="-ProviderOnly" (
+  set "PS_ARGS=!PS_ARGS! -ProviderOnly"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="--pkg" (
+  if "%~2"=="" (
+    echo [error] --pkg 需要指定包来源
+    set "EXIT_CODE=1"
+    goto :finish
+  )
+  set "PS_ARGS=!PS_ARGS! -Pkg "%~2""
+  shift
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="-Pkg" (
+  if "%~2"=="" (
+    echo [error] -Pkg 需要指定包来源
+    set "EXIT_CODE=1"
+    goto :finish
+  )
+  set "PS_ARGS=!PS_ARGS! -Pkg "%~2""
+  shift
+  shift
+  goto :parse_args
+)
 if /I "%~1"=="--no-restart" (
   set "PS_ARGS=!PS_ARGS! -NoRestart"
   shift
