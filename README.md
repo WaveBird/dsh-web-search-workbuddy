@@ -28,7 +28,30 @@ DSH 会话 ── ctx.web.search() ──▶ dsh-web-search-workbuddy
 
 ## 一、快速安装
 
-### 1. 使用 DSH 插件命令安装（推荐）
+### 1. 一键安装与配置脚本（最推荐，自动完成安装 + 切换默认搜索）
+
+脚本会自动检测 `~/.dsh/profiles`：仅有一个 profile 时自动选中并完成插件安装、关闭 DSH 默认搜索、切换 `searchProvider: workbuddy-gateway`、校验配置；若检测到正在运行的 DSH 进程，会询问是否重启（直接按回车确认）。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash
+```
+
+常用参数（通过 `bash -s -- ...` 传入，或克隆仓库后直接运行 `./install.sh`）：
+
+```bash
+# 指定 profile（如 desktop）
+curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --profile desktop
+
+# 开启模型自主控制过滤参数模式（modelControlled: true）
+curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --model-controlled
+
+# 从 GitHub main 分支安装最新代码（不走 npm）
+curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --github
+```
+
+> 脚本在修改 `cordis.patch.yml` 前会自动备份原文件（`cordis.patch.yml.bak.<时间戳>`），并用独立标记块托管配置，支持重复执行幂等更新；若 `dsh --dump-config` 校验失败会自动回滚备份。
+
+### 2. 手动使用 DSH 插件命令安装
 
 ```bash
 # 安装到默认 profile
@@ -39,9 +62,9 @@ dsh plugin --profile web add dsh-web-search-workbuddy
 dsh plugin --profile desktop add dsh-web-search-workbuddy
 ```
 
-> **DSH 桌面版 GUI 安装**：也可以在界面中进入 **设置 → 插件 → 添加插件**，输入包名 `dsh-web-search-workbuddy` 点击安装。
+> **DSH 桌面版 GUI 安装**：也可以在界面中进入 **设置 → 插件 → 添加插件**，输入包名 `dsh-web-search-workbuddy` 点击安装。手动安装后请继续完成下方「二、配置方法」。
 
-### 2. 其他安装方式（备选）
+### 3. 其他安装方式（备选）
 
 ```bash
 # 从 GitHub 主分支直接在线安装最新代码
