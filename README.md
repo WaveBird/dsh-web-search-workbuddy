@@ -1,111 +1,147 @@
 # dsh-web-search-workbuddy
 
-WorkBuddy gateway-backed search provider for the DeepSeek Harness web capability
-seam (`ctx.web`). Bridges the model-facing `web_search` tool to the
-workbuddy2api-go gateway's agenttool web-search passthrough, with
-[workbuddy-manager](https://github.com/WaveBird/workbuddy-manager) as the
-entry proxy — so **one `wbk_` key serves both the chat route and `web_search`**.
+面向 **DeepSeek Harness（DSH）** 联网能力接口（`ctx.web`）的 WorkBuddy 网关搜索提供器插件。
 
-**v0.4.1**: optionally owns the model-facing `web_search` tool so the model
-itself can choose `allowedDomains` / `blockedDomains` / `freshness` /
-`maxResults` per call — without patching the official `dsh-tool-web` package.
-Original provider-only mode (v0.4.0) remains the default.
+它将 DSH 的 `web_search` 工具桥接到 `workbuddy2api-go` 网关的 agenttool 搜索透传接口，并以 [workbuddy-manager](https://github.com/WaveBird/workbuddy-manager) 作为统一入口代理——**只需一把 `wbk_` 密钥，即可同时服务对话请求与 `web_search` 联网搜索**。
 
-**v0.4.0**: forwards every parameter `workbuddy.cn/agenttool/v1/search`
-supports (`type`, `max_results`, `allowed_domains`, `blocked_domains`,
-`freshness`) — see [Protocol](#protocol).
-
-```
-DSH session ── ctx.web.search() ──▶ this provider
-                                       │  POST {manager}:7864/v1/tools/search   (wbk_ key)
-                                       ▼
-                              workbuddy-manager  (auth + upstream resolve + logging)
-                                       │  POST {wb2api-go}:7863/v1/tools/search
-                                       ▼
-                              wb2api-go  (account-pool rotation + 15001 quota cooldown)
-                                       ▼
-                              https://www.workbuddy.cn/agenttool/v1/search
+```text
+DSH 会话 ── ctx.web.search() ──▶ dsh-web-search-workbuddy
+                                      │  POST {manager}:7864/v1/tools/search   (Bearer wbk_...)
+                                      ▼
+                             workbuddy-manager  （鉴权 + 上游路由解析 + 日志）
+                                      │  POST {wb2api-go}:7863/v1/tools/search
+                                      ▼
+                             wb2api-go          （多账号池轮询 + 15001 额度冷却）
+                                      ▼
+                             https://www.workbuddy.cn/agenttool/v1/search  (CN)
+                             https://www.workbuddy.ai/agenttool/v1/search  (Global)
 ```
 
-## ⚠️ Compatibility requirements（兼容性要求）
+### 核心特性
 
-This plugin is **not standalone**. It depends on a specific feature set that
-landed in the WorkBuddy ecosystem at pinned versions; running against an
-unpatched stack fails with `404` (route missing) or `401` (search endpoint
-expecting the gateway key):
+- **零配置自动复用密钥与地址**：默认自动读取当前会话所用模型路由（`llm-pi-ai`）的 `baseURL` 和 `apiKeyEnv`，多路由切换时搜索自动跟随，无需重复配置。
+- **支持 agenttool 完整过滤参数（v0.4.0+）**：支持 `type`、`max_results`、`allowed_domains`、`blocked_domains`、`freshness`（`d1` / `m1` / `y1`）。
+- **可选「模型自主控制过滤」模式（v0.4.1+）**：开启 `modelControlled: true` 后，模型可在每次调用 `web_search` 时自行决定限定域名、排除域名、时效与返回条数，无需魔改任何 DSH 官方文件。
+- **宽范围 DSH 兼容（v0.4.2+）**：`peerDependencies` 声明为 `>=0.2.2-rc.1 <0.3.0-0`，升级 DSH `0.2.x` 小版本 / rc 版本不会再被安装器拒绝或启动器禁用。
 
-| Component | Required version / state | Why |
-|---|---|---|
-| **workbuddy-manager** | **≥ the `feat/web-search-passthrough` branch** ([PR #2](https://github.com/WaveBird/workbuddy-manager/pull/2), upstream [PR #430](https://github.com/ithtelab/workbuddy-manager/pull/430)). Baseline tested: `v2.11.14` + the PR's 3 commits (`dce9acc` route, `5e88629` realm fix, `c33e122` docs). For the v0.4.0 full-parameter set also take the small API follow-up: `/v1/tools/search` validates `type`/`max_results`/`allowed_domains`/`blocked_domains`/`freshness` and forwards the body verbatim. It will ship in a release **after v2.11.14** — until then, deploy the branch or cherry-pick. | The `POST /v1/tools/search` passthrough route **does not exist** in upstream releases ≤ v2.11.14. Older managers return `405` and this provider cannot work through them. |
-| **workbuddy2api-go gateway** | Built from the upstream snapshot **`upstream-id 801cebba` (v2.11.14 / 0056 patches)** plus [`0057-web-search-tool.patch`](https://github.com/WaveBird/workbuddy-manager/blob/feat/web-search-passthrough/dev/upstream-patches/0057-web-search-tool.patch) (shipped inside the manager PR above). | The `POST /v1/tools/search` handler, account-pool rotation, and 15001 quota cooldown live in this patch; the stock gateway has no agenttool route. |
-| **DeepSeek Harness (DSH)** | `>=0.2.2-rc.1 <0.3.0-0` (web seam contract `ctx.web.registerSearchProvider` / `WebSearchProvider` shape). Verified against `0.2.2-rc.1` through `0.2.2-rc.5`; any `0.2.x` version keeping that seam shape works. | The provider registers into `ctx.web`; a breaking seam change (e.g. `0.3.x`) would require a plugin update. |
-| **Realm coverage (CN + Global)** | Both realms supported. The gateway routes agenttool by account realm (CN → `www.workbuddy.cn`, Global → `www.workbuddy.ai`, both endpoints probe-verified) — a `global:`-realm key (WorkBuddy AI / international) searches the same way as CN. The plugin itself is realm-agnostic: it follows whatever model route the conversation uses. | International accounts participate in the same account-pool rotation and 15001 quota cooldown as CN. |
+---
 
-Quick self-check per component:
+## 一、快速安装
+
+### 1. 使用 DSH 插件命令安装（推荐）
 
 ```bash
-# manager: route exists and accepts the wbk_ key (405/401 → wrong manager version);
-# full-parameter body must be forwarded verbatim (200; 400 invalid_search_params → old route)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:7864/v1/tools/search \
-  -H "Authorization: Bearer <wbk_ key>" -H 'content-type: application/json' \
-  -d '{"query":"ping","type":"text2text","max_results":3,"allowed_domains":["go.dev"],"blocked_domains":["reddit.com"],"freshness":"d1"}'
-
-# gateway (bypassing manager): 401 with the gateway's own api_key configured means alive
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:7863/v1/tools/search \
-  -H 'content-type: application/json' -d '{"query":"ping"}'
-```
-
-## Install
-
-```bash
-# Recommended: via the DSH plugin CLI (pass --profile <name> if not using the default profile):
+# 安装到默认 profile
 dsh plugin add dsh-web-search-workbuddy
-# e.g. for the `web` profile:
-dsh plugin --profile web add dsh-web-search-workbuddy
 
-# Or directly via pnpm / npm:
+# 若使用指定 profile（例如 web / desktop / tui），加上 --profile：
+dsh plugin --profile web add dsh-web-search-workbuddy
+dsh plugin --profile desktop add dsh-web-search-workbuddy
+```
+
+> **DSH 桌面版 GUI 安装**：也可以在界面中进入 **设置 → 插件 → 添加插件**，输入包名 `dsh-web-search-workbuddy` 点击安装。
+
+### 2. 其他安装方式（备选）
+
+```bash
+# 从 GitHub 主分支直接在线安装最新代码
+dsh plugin --profile web add github:WaveBird/dsh-web-search-workbuddy#main
+
+# 或在对应 profile 目录下直接使用 pnpm
 cd ~/.dsh/profiles/web && pnpm add dsh-web-search-workbuddy
+
+# 或使用 npm
 npm install dsh-web-search-workbuddy
 ```
 
-Peer dependencies (`@deepseek-ai/dsh-web`, `@deepseek-ai/dsh-credentials`,
-`@deepseek-ai/cordis`) resolve from the DSH profile's own `node_modules` when
-installed this way; `@deepseek-ai/schemastery` ships as a direct dependency.
+> 说明：对等依赖 `@deepseek-ai/dsh-web`、`@deepseek-ai/dsh-credentials`、`@deepseek-ai/cordis` 在运行时由 DSH 宿主环境提供；`@deepseek-ai/schemastery` 已作为直接依赖打包。
 
-## DSH profile assembly
+---
+
+## 二、配置方法（`cordis.patch.yml`）
+
+安装完成后，需要在对应 profile 的 `cordis.patch.yml` 中启用本插件并指定搜索提供器：
+
+- `web` profile：`~/.dsh/profiles/web/cordis.patch.yml`
+- `desktop` profile：`~/.dsh/profiles/desktop/cordis.patch.yml`（Windows 为 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`）
+
+下面提供 **3 种常见配置方案**，按需选择其一复制到 `cordis.patch.yml` 即可。
+
+### 方案 A：零配置推荐模式（默认）
+
+适合已经用 `llm-pi-ai` 配置好 `workbuddy-manager` 模型路由的用户。插件会自动从当前会话的模型路由派生网关地址和 `wbk_` 密钥，**无需重复填写地址和 Key**：
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml
+
+# 1. 插入本插件（零配置即可工作）
 - insert:
     - id: web-search-workbuddy
       name: dsh-web-search-workbuddy
-      # No config needed: baseURL + apiKeyEnv derive from the conversation's
-      # model-provider route automatically. Optional search defaults (v0.4.0):
-      # config:
-      #   type: text2text              # agenttool 请求类型（固定）
-      #   maxResults: 5                # 1..20；请求级 maxResults 优先
-      #   allowedDomains: [go.dev]     # 只返回这些域
-      #   blockedDomains: [reddit.com] # 网关拼成 " -site:reddit.com"
-      #   freshness: d1                # d1 | m1 | y1
-      #   modelControlled: true        # v0.4.1：模型自主控制过滤参数
-      #   modelMaxQueries: 10          # 一次调用最多几条 query
-      #   modelSummaryMaxChars: 800    # 每条来源摘要上限
+
+# 2. 将 DSH 的搜索提供器固定为 workbuddy-gateway
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
     fetchProvider: http
-    searchProvider: workbuddy-gateway           # ← pin this provider
+    searchProvider: workbuddy-gateway
+
+# 3. 保持官方 tool-web 的 search 开启（如配置了多个 agent preset，需确保每个 preset 里的 tool-web 均为 search: true）
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
-  # Default mode (modelControlled: false): keep search: true in EVERY preset.
-  config: { fetch: true, search: true, searchTimeoutMs: 60000 }
-# also set search: true in every agent preset's tool-web entry
+  config:
+    fetch: true
+    search: true
+    searchTimeoutMs: 60000
 ```
 
-### Model-controlled mode (v0.4.1)
+如果希望在默认模式下设置全局搜索过滤默认值（所有搜索共享），可在 `web-search-workbuddy` 下按需补充 `config`：
 
-With `modelControlled: true`, this plugin registers a replacement `web_search`
-tool whose schema exposes:
+```yaml
+- insert:
+    - id: web-search-workbuddy
+      name: dsh-web-search-workbuddy
+      config:
+        maxResults: 5                # 1..20，默认 5
+        allowedDomains: [go.dev]     # 可选：仅返回指定域名
+        blockedDomains: [reddit.com] # 可选：排除指定域名
+        freshness: m1                # 可选：d1（一天内）| m1（一月内）| y1（一年内）
+```
+
+### 方案 B：模型自主控制过滤参数（`modelControlled: true`，v0.4.1+）
+
+DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。开启 `modelControlled: true` 后，本插件会接管 `web_search` 工具注册，把 `allowedDomains` / `blockedDomains` / `freshness` / `maxResults` 开放给模型按需传入，并自动注入对应的系统提示词说明。
+
+> **⚠️ 重要**：由于 `ctx.tools.register()` 不允许同名工具重复注册，开启 `modelControlled: true` 时，**必须将全局以及所有 agent preset 中的 `@deepseek-ai/dsh-tool-web` 都设为 `search: false`**（`fetch: true` 保留不变，不影响 `web_fetch`）。
+
+```yaml
+# ~/.dsh/profiles/web/cordis.patch.yml
+
+- insert:
+    - id: web-search-workbuddy
+      name: dsh-web-search-workbuddy
+      config:
+        modelControlled: true
+        maxResults: 5
+        modelMaxQueries: 10
+        modelSummaryMaxChars: 800
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    fetchProvider: http
+    searchProvider: workbuddy-gateway
+
+# 必须关闭官方 tool-web 的 search（所有 agent preset 中同样需要 search: false）
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    search: false
+    searchTimeoutMs: 60000
+```
+
+模型侧看到的 `web_search` 工具参数格式示例：
 
 ```json
 {
@@ -117,49 +153,107 @@ tool whose schema exposes:
 }
 ```
 
-The tool forwards those extras into `ctx.web.search()`'s request object; the
-seam passes it through unchanged and the provider maps them onto the gateway
-body (request values win over the config defaults above). No DSH framework
-file is modified. Because `ctx.tools.register()` rejects duplicate names,
-assembly **must** set `search: false` on every `@deepseek-ai/dsh-tool-web`
-entry (the global one and all agent presets); `web_fetch` stays enabled:
+### 方案 C：显式指定网关地址与密钥
+
+如果搜索服务与对话模型不在同一个 `workbuddy-manager` 域名上，或者使用不同的密钥，可显式配置 `baseURL` 和 `apiKeyEnv`（显式配置优先级高于自动派生）：
 
 ```yaml
-- id: tool-web
-  name: '@deepseek-ai/dsh-tool-web'
-  config: { fetch: true, search: false, searchTimeoutMs: 60000 }
+- insert:
+    - id: web-search-workbuddy
+      name: dsh-web-search-workbuddy
+      config:
+        baseURL: http://127.0.0.1:7864            # workbuddy-manager 根地址（不要带 /v1/tools/search）
+        apiKeyEnv: WORKBUDDY_SEARCH_API_KEY       # DSH 凭据名或启动环境变量名（值为 wbk_...）
 ```
 
-If any preset still has `search: true`, startup reports a duplicate
-`web_search`; either disable it or set `modelControlled: false` to keep the
-official tool. A system-prompt section teaches the model when to use the four
-optional filters.
+密钥解析顺序：优先从 DSH 凭据服务（`ctx.credentials`）读取 `apiKeyEnv` 对应的凭据，未找到时回退读取启动环境变量 `process.env[apiKeyEnv]`。
 
-Fully restart `dsh web` afterwards (patch changes do not HMR). The model's tool
-catalog gains the extended `web_search` in new sessions.
+---
 
-### Zero-config credential derivation
+## 三、重启与生效验证
 
-With no explicit config, the plugin reads the **model provider route the
-conversation is already using** (e.g. `workbuddy-mannager-cn` registered under
-`llm-pi-ai`): its `apiKeyEnv` credential reference is resolved for the search
-request, and its `baseURL` minus the `/v1/` suffix becomes the search origin —
-the search endpoint lives on the same manager host (`/v1/tools/search` beside
-`/v1/chat/completions`). Same mechanism as the official
-`@deepseek-ai/dsh-web-deepseek-api` (`listConfigurableProviders` → loader
-entries → effective config).
+1. **完全重启 DSH**（修改 `cordis.patch.yml` 不支持热更新 HMR，重启后新建会话即可在工具列表看到 `web_search`）。
+2. **命令行检查配置与兼容性**：
+   ```bash
+   # 检查配置树中是否已包含 web-search-workbuddy，且无 disabling / incompatible 告警
+   dsh --profile web --dump-config | grep -E "web-search-workbuddy|workbuddy-gateway"
+   ```
+   正常应能看到 `searchProvider: workbuddy-gateway` 和 `name: dsh-web-search-workbuddy`。
 
-Explicit `baseURL` / `apiKeyEnv` still win when set — for deployments whose
-search endpoint differs from the chat route, or whose model key cannot reach
-the search route.
+---
 
-## Protocol
+## 四、全部配置项说明
 
-```json
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `baseURL` | `string` | 自动派生 | `workbuddy-manager` 根地址（例如 `http://127.0.0.1:7864`）。省略时自动取当前模型路由 `baseURL` 并剥离末尾 `/v1/` |
+| `apiKeyEnv` | `string` | 自动派生 | 凭据引用名 / 环境变量名（存放 `wbk_` 密钥）。省略时自动取当前模型路由的 `apiKeyEnv` |
+| `timeoutMs` | `number` | `30000` | 单次搜索超时时间（毫秒，最小 `1000`；网关侧单账号上游超时上限为 20s） |
+| `maxResults` | `number` | `5` | 默认最大返回条数（范围 `1..20`）；单次请求的 `maxResults` 优先 |
+| `type` | `string` | `"text2text"` | agenttool 请求类型（`0057` 网关上游固定使用 `text2text`） |
+| `allowedDomains` | `string[]` | 未设置 | 仅返回这些域名的结果（自动去除协议与路径并去重） |
+| `blockedDomains` | `string[]` | 未设置 | 排除这些域名（网关按官方 CLI 语义拼接为 `-site:<domain>`） |
+| `freshness` | `"d1" \| "m1" \| "y1"` | 未设置 | 时效过滤：`d1`（一天内）/ `m1`（一月内）/ `y1`（一年内） |
+| `modelControlled` | `boolean` | `false` | 是否由本插件注册带过滤参数的 `web_search` 工具。设为 `true` 时须在所有 `tool-web` 中设 `search: false` |
+| `modelMaxQueries` | `number` | `10` | `modelControlled: true` 时单次 `web_search` 最多允许的查询词条数（`1..10`） |
+| `modelSummaryMaxChars` | `number` | `800` | `modelControlled: true` 时单条来源摘要的最大字符数（最小 `100`） |
+
+---
+
+## 五、前置依赖与兼容性要求
+
+本插件**不是独立搜索引擎**，依赖 WorkBuddy 网关侧已合入 `/v1/tools/search` 透传补丁；若对接未打补丁的旧版本，会返回 `404`/`405`（路由不存在）或 `401`（鉴权失败）：
+
+| 组件 | 版本 / 状态要求 | 说明 |
+|---|---|---|
+| **workbuddy-manager** | 需包含 `feat/web-search-passthrough` 路由（[PR #2](https://github.com/WaveBird/workbuddy-manager/pull/2)、[PR #3](https://github.com/WaveBird/workbuddy-manager/pull/3)，上游 [PR #430](https://github.com/ithtelab/workbuddy-manager/pull/430)）。基线已测：`v2.11.14` + 路由与完整参数校验提交（将在 `v2.11.14` 之后版本正式发布；在此之前请部署对应分支或 cherry-pick） | `<= v2.11.14` 上游版本没有 `POST /v1/tools/search` 路由，调用会返回 `405` |
+| **workbuddy2api-go 网关** | 基于上游快照 `upstream-id 801cebba`（v2.11.14 / 0056 补丁）并打上 [`0057-web-search-tool.patch`](https://github.com/WaveBird/workbuddy-manager/blob/feat/web-search-passthrough/dev/upstream-patches/0057-web-search-tool.patch) | 负责 `/v1/tools/search` 处理、多账号池轮询以及 `15001` 额度耗尽冷却 |
+| **DeepSeek Harness (DSH)** | `>=0.2.2-rc.1 <0.3.0-0`（已实测 `0.2.2-rc.1` 至 `0.2.2-rc.5`） | 依赖 `ctx.web.registerSearchProvider` / `WebSearchProvider` 契约，不跨 `0.3.0` |
+| **CN / Global 双区** | 均支持。网关按账号所属区域自动路由（CN → `www.workbuddy.cn`，Global → `www.workbuddy.ai`）；本插件本身与区域无关，自动跟随当前会话路由 | 国际区账号同样参与账号池轮询与 `15001` 冷却 |
+
+### 服务端连通性自检
+
+```bash
+# 1. 检查 workbuddy-manager 路由与完整参数透传（期望返回 200）
+#    405/404 = manager 版本过旧无此路由；401 = wbk_ 密钥无效；400 = 未包含完整参数校验提交
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:7864/v1/tools/search \
+  -H "Authorization: Bearer <你的 wbk_ 密钥>" \
+  -H 'content-type: application/json' \
+  -d '{"query":"ping","type":"text2text","max_results":3,"allowed_domains":["go.dev"],"blocked_domains":["reddit.com"],"freshness":"d1"}'
+
+# 2. 直接检查 wb2api-go 网关存活（若配置了网关 api_key，期望返回 401 即代表路由存在）
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:7863/v1/tools/search \
+  -H 'content-type: application/json' \
+  -d '{"query":"ping"}'
+```
+
+---
+
+## 六、零配置自动派生原理
+
+当未显式填写 `baseURL` / `apiKeyEnv` 时，本插件会读取**当前发起搜索的会话正在使用的模型路由**（例如 `llm-pi-ai` 下的 `workbuddy-mannager-cn`）：
+
+1. 通过与官方 `@deepseek-ai/dsh-web-deepseek-api` 相同的机制（`llm.listConfigurableProviders()` → `loader.entries()` → `effectiveConfig`）读取该路由配置；
+2. 取出其中的 `apiKeyEnv` 解析密钥（`ctx.credentials` 优先，其次启动环境变量）；
+3. 取出其中的 `baseURL` 并剥离末尾的 `/v1/` 后缀（聊天走 `/v1/chat/completions`，搜索走同源 `/v1/tools/search`）。
+
+当你在会话中切换不同的 WorkBuddy 模型路由时，搜索请求会自动跟随当前路由的地址与密钥。
+
+---
+
+## 七、协议细节
+
+### 请求格式
+
+```http
 POST {baseURL}/v1/tools/search
 Authorization: Bearer <wbk_ key>
+Content-Type: application/json
+```
+
+```json
 {
-  "query": "...",
+  "query": "go generics",
   "type": "text2text",
   "max_results": 5,
   "allowed_domains": ["go.dev"],
@@ -168,55 +262,62 @@ Authorization: Bearer <wbk_ key>
 }
 ```
 
-Every parameter the upstream `workbuddy.cn/agenttool/v1/search` accepts is
-covered. The manager route validates the known optional fields and forwards
-the body verbatim; the 0057 gateway pins `type`, applies `max_results`,
-passes `allowed_domains`/`freshness` upstream and appends `-site:<domain>`
-for `blocked_domains` (official CLI semantics).
+| agenttool 字段 | 插件配置项 | 单次请求覆盖字段 | 取值与规则 |
+|---|---|---|---|
+| `query` | （来自请求） | `query` | 必填 |
+| `type` | `type` | `type` | 默认 `"text2text"` |
+| `max_results` | `maxResults` | `maxResults` / `max_results` | 钳制在 `1..20`，默认 `5` |
+| `allowed_domains` | `allowedDomains` | `allowedDomains` / `allowed_domains` | 自动去协议/路径、去重；空数组省略 |
+| `blocked_domains` | `blockedDomains` | `blockedDomains` / `blocked_domains` | 同上；空数组省略 |
+| `freshness` | `freshness` | `freshness` | `d1` \| `m1` \| `y1`；未设置时省略；非法值在本地直接拦截报错，不消耗搜索额度 |
 
-| agenttool parameter | Plugin config key | Values / default |
-|---|---|---|
-| `query` | (from the seam request) | required |
-| `type` | `type` | `"text2text"` (default) |
-| `max_results` | `maxResults` | 1..20, default `5`; seam request `maxResults` wins |
-| `allowed_domains` | `allowedDomains` | string[]; scheme/path stripped, deduped; empty = omitted |
-| `blocked_domains` | `blockedDomains` | string[]; same normalization; empty = omitted |
-| `freshness` | `freshness` | `d1` \| `m1` \| `y1`; unset = omitted |
+### 响应格式
 
-The DSH web seam's `WebSearchRequest` carries only `query` + `maxResults` in
-its type, but `ctx.web.search()` passes the request object through untouched.
-In default mode (v0.4.0) the other four parameters are deployment-level
-defaults in this plugin's config. In `modelControlled: true` mode (v0.4.1) the
-plugin-owned tool exposes them to the model per call. For direct callers each
-one also accepts a **per-request override**, in camelCase or the upstream
-snake_case spelling — `type`, `maxResults`/`max_results`,
-`allowedDomains`/`allowed_domains`, `blockedDomains`/`blocked_domains`,
-`freshness`. Request overrides win over config; invalid `freshness` fails
-locally as `WEB_PROVIDER_ERROR` without spending an account-pool search quota.
-Empty optional values are omitted from the wire body.
-
-Response is the upstream agenttool envelope passed through verbatim:
+上游返回 agenttool 标准信封，由本插件归一化为 DSH `ctx.web` 的 `{ sources: [{ url, title, snippet, summary }], truncated }` 结构（自动过滤非 `http(s)://` 链接并按 URL 去重）：
 
 ```json
-{ "code": 0, "msg": "", "results": [{ "title": "...", "url": "...", "snippet": "..." }],
-  "total_results": 3, "response_time_ms": 616, "provider": "1" }
+{
+  "code": 0,
+  "msg": "",
+  "results": [
+    { "title": "...", "url": "https://...", "snippet": "..." }
+  ],
+  "total_results": 3,
+  "response_time_ms": 616,
+  "provider": "1"
+}
 ```
 
-This provider maps it to the seam's normalized result (`{url,title,snippet,summary}`
-sources; url-scheme filter + dedupe; `maxResults` truncation owned by the seam).
+---
 
-## Error vocabulary
+## 八、错误码与常见问题排查
 
-| Situation | WebError code |
+### 错误码表
+
+| 场景 | `WebError` 错误码 |
 |---|---|
-| No gateway key configured | `WEB_PROVIDER_CREDENTIAL_MISSING` |
-| Manager unreachable / non-2xx / upstream business code ≠ 0 | `WEB_PROVIDER_ERROR` |
-| All-pool search quota exhausted (15001, gateway 429 `quota_web_search`) | `WEB_PROVIDER_ERROR` (message says quota) |
-| Caller cancellation | `WEB_ABORTED` |
-| `timeoutMs` elapsed | `WEB_PROVIDER_ERROR` (message says timed out) |
-| Invalid per-request `freshness` | `WEB_PROVIDER_ERROR` (no request sent) |
-| Invalid config (`freshness` / array / `maxResults` bounds) | rejected by the Config schema at assembly |
+| 无法派生且未配置 `baseURL` / `apiKeyEnv` | `WEB_PROVIDER_CONFIGURED_MISSING` |
+| 未找到可用密钥（凭据服务与环境变量均为空） | `WEB_PROVIDER_CREDENTIAL_MISSING` |
+| `workbuddy-manager` 不可达 / 非 2xx 响应 / 上游业务码 `code ≠ 0` | `WEB_PROVIDER_ERROR` |
+| 账号池所有账号搜索额度耗尽（上游 `15001`，网关 HTTP `429` `quota_web_search`） | `WEB_PROVIDER_ERROR`（消息提示配额耗尽，次日重置） |
+| 调用方主动取消 | `WEB_ABORTED` |
+| 超过 `timeoutMs` 超时 | `WEB_PROVIDER_ERROR`（消息提示 timed out） |
+| 单次请求传入非法 `freshness` | `WEB_PROVIDER_ERROR`（本地拦截，不发请求） |
+| 配置项类型或范围非法 | 启动装配阶段由 Config Schema 直接拒绝 |
 
-## License
+### 常见问题
 
-MIT — see the upstream projects' licenses for their respective code.
+- **提示 `configured web provider "workbuddy-gateway" is not registered`**：
+  - 检查 `cordis.patch.yml` 中是否已 `- insert:` 了 `dsh-web-search-workbuddy`；
+  - 确认已完全重启 DSH；
+  - 若之前装的是 `<= 0.4.1` 旧版导致被 DSH 启动器因版本不兼容禁用，请升级至 `>= 0.4.2`（`dsh plugin --profile <name> add dsh-web-search-workbuddy@latest`）。
+- **开启 `modelControlled: true` 后启动报错提示 `web_search` 重复注册**：
+  - 请检查全局以及所有 agent preset 中的 `@deepseek-ai/dsh-tool-web` 配置，确保全部设置了 `search: false`。
+- **搜索返回 HTTP 405 / 404**：
+  - 当前 `workbuddy-manager` 版本未包含 `/v1/tools/search` 透传路由，请按「第五节」自检并更新 manager 与 `0057` 网关补丁。
+
+---
+
+## 开源协议
+
+MIT — 各上游项目代码遵循其各自开源协议。
