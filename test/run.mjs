@@ -564,6 +564,31 @@ console.log("\n== D3. 非 pi-ai 会话路由回退 + 单侧显式 apiKeyEnv ==")
   console.log("✓ 单侧显式 apiKeyEnv：ready() 为 true，baseURL 兜底 http://127.0.0.1:7864");
 }
 
+console.log("\n== D4. blockedDomains 本地结果后过滤（精确域名 + 子域名） ==");
+{
+  const p = register({});
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    code: 0,
+    msg: "",
+    results: [
+      { title: "Exact blocked", url: "https://artificialintelligence-news.com/", snippet: "blocked" },
+      { title: "Subdomain blocked", url: "https://www.wikiwand.com/zh-hant/articles/Hello,_world", snippet: "blocked" },
+      { title: "Kept", url: "https://go.dev/blog/generics", snippet: "kept" },
+    ],
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const out = await p.search({
+      query: "hello world",
+      blockedDomains: ["artificialintelligence-news.com", "wikiwand.com"],
+    });
+    assert.deepEqual(out.sources.map((s) => s.url), ["https://go.dev/blog/generics"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  console.log("✓ blockedDomains 同时在结果侧过滤精确域名与 www. 等子域名");
+}
+
 console.log("\n== E. peerDependencies 范围约束（避免精确钉死单一 DSH rc） ==");
 {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
