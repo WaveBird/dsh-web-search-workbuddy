@@ -28,25 +28,49 @@ DSH 会话 ── ctx.web.search() ──▶ dsh-web-search-workbuddy
 
 ## 一、快速安装
 
-### 1. 一键安装与配置脚本（最推荐，自动完成安装 + 切换默认搜索）
+### 1. 一键安装与配置脚本（最推荐，跨平台支持 macOS / Linux / Windows）
 
-脚本会自动检测 `~/.dsh/profiles`：仅有一个 profile 时自动选中并完成插件安装、关闭 DSH 默认搜索、切换 `searchProvider: workbuddy-gateway`、校验配置；若检测到正在运行的 DSH 进程，会询问是否重启（直接按回车确认）。
+脚本位于 [`scripts/`](./scripts/) 目录，执行前会自动检测全部前置条件（Node.js ≥ 20、`dsh` 命令与版本范围 `>=0.2.2-rc.1 <0.3.0-0`、在线安装源连通性、profile 目录权限以及 `workbuddy-manager` 搜索路由可达性），遇到问题会明确打印原因与解决办法。
+
+检测到仅有 1 个 DSH profile 时会自动选用，完成插件安装、关闭 DSH 默认搜索、切换 `searchProvider: workbuddy-gateway` 与配置校验；若检测到正在运行的 DSH 进程，会询问是否重启（直接按回车确认）。
+
+**macOS / Linux（Bash）：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/scripts/install.sh | bash
 ```
 
-常用参数（通过 `bash -s -- ...` 传入，或克隆仓库后直接运行 `./install.sh`）：
+**Windows（PowerShell 5.1 / 7+）：**
+
+```powershell
+irm https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/scripts/install.ps1 | iex
+```
+
+**Windows（CMD / 双击运行）：**
+
+克隆或下载仓库后直接双击 [`scripts/install.bat`](./scripts/install.bat)，或在 CMD 中执行：
+
+```bat
+scripts\install.bat
+```
+
+常用参数（均支持三个脚本；`curl | bash` 请通过 `bash -s -- ...` 传参）：
 
 ```bash
-# 指定 profile（如 desktop）
-curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --profile desktop
+# 指定 profile（如 desktop / web）
+./scripts/install.sh --profile desktop
+# PowerShell:
+.\scripts\install.ps1 -Profile desktop
+# CMD:
+scripts\install.bat --profile desktop
 
 # 开启模型自主控制过滤参数模式（modelControlled: true）
-curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --model-controlled
+./scripts/install.sh --model-controlled
+# PowerShell: .\scripts\install.ps1 -ModelControlled
 
 # 从 GitHub main 分支安装最新代码（不走 npm）
-curl -fsSL https://raw.githubusercontent.com/WaveBird/dsh-web-search-workbuddy/main/install.sh | bash -s -- --github
+./scripts/install.sh --github
+# PowerShell: .\scripts\install.ps1 -Github
 ```
 
 > 脚本在修改 `cordis.patch.yml` 前会自动备份原文件（`cordis.patch.yml.bak.<时间戳>`），并用独立标记块托管配置，支持重复执行幂等更新；若 `dsh --dump-config` 校验失败会自动回滚备份。
