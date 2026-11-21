@@ -561,6 +561,22 @@ for (const item of matches) {
 NODE_EOF
 }
 
+spawn_detached_dsh() {
+  node - "$1" "$2" <<'NODE_EOF'
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const cmd = process.argv[2];
+const logFile = process.argv[3];
+const fd = fs.openSync(logFile, 'a');
+const child = spawn('/bin/sh', ['-c', `exec ${cmd}`], {
+  detached: true,
+  stdio: ['ignore', fd, fd],
+});
+child.unref();
+console.log(child.pid);
+NODE_EOF
+}
+
 RUNNING_LIST="$(find_running_dsh || true)"
 
 if [ -n "$RUNNING_LIST" ]; then
@@ -623,12 +639,11 @@ if [ -n "$RUNNING_LIST" ]; then
     else
       LOG_FILE="$PROFILE_DIR/dsh-restart.log"
       info "正在按原启动参数重新启动 DSH..."
-      nohup sh -c "exec $PRIMARY_CMD" >> "$LOG_FILE" 2>&1 < /dev/null &
-      NEW_PID=$!
+      NEW_PID="$(spawn_detached_dsh "$PRIMARY_CMD" "$LOG_FILE")"
       sleep 2
       AFTER_LIST="$(find_running_dsh || true)"
-      if kill -0 "$NEW_PID" 2>/dev/null || [ -n "$AFTER_LIST" ]; then
-        ok "DSH 已重启（PID: $NEW_PID，日志: $LOG_FILE）。请新建会话使用 web_search。"
+      if { [ -n "$NEW_PID" ] && kill -0 "$NEW_PID" 2>/dev/null; } || [ -n "$AFTER_LIST" ]; then
+        ok "DSH 已重启（PID: ${NEW_PID:-见进程列表}，日志: $LOG_FILE）。请新建会话使用 web_search。"
       else
         warn_with_guide \
           "后台重启进程未能持续运行，请查看日志: $LOG_FILE。" \
