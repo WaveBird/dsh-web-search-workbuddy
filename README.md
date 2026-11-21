@@ -58,14 +58,20 @@ npm install dsh-web-search-workbuddy
 
 ---
 
-## 二、配置方法（`cordis.patch.yml`）
+## 二、配置方法：关闭默认 DSH 搜索并切换为本插件
 
-安装完成后，需要在对应 profile 的 `cordis.patch.yml` 中启用本插件并指定搜索提供器：
+DSH 默认启用了官方 DeepSeek 搜索提供器（`web-search-deepseek`、`web-deepseek-api`），通过 `web`（`@deepseek-ai/dsh-web`）统一调度，再由 `tool-web`（`@deepseek-ai/dsh-tool-web`）向模型暴露 `web_search` 工具。
 
+要**关掉默认的 DSH 搜索并切换到 WorkBuddy 插件搜索**，需要在对应 profile 的 `cordis.patch.yml` 中完成三步：
+1. **关闭默认 DSH 搜索提供器**：禁用 `web-search-deepseek`、`web-deepseek-api`（以及可选的 `ui-settings-web-search` 设置页）；
+2. **注册本插件**：通过 `- insert:` 插入 `dsh-web-search-workbuddy`；
+3. **切换搜索路由**：将 `web`（`@deepseek-ai/dsh-web`）的 `searchProvider` 显式设为 `workbuddy-gateway`（`fetchProvider` 保留 `http`，不影响 `web_fetch`）。
+
+`cordis.patch.yml` 文件路径：
 - `web` profile：`~/.dsh/profiles/web/cordis.patch.yml`
 - `desktop` profile：`~/.dsh/profiles/desktop/cordis.patch.yml`（Windows 为 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`）
 
-下面提供 **3 种常见配置方案**，按需选择其一复制到 `cordis.patch.yml` 即可。
+下面提供 **3 种常见配置方案**，按需选择其一追加到 `cordis.patch.yml` 即可。
 
 ### 方案 A：零配置推荐模式（默认）
 
@@ -74,19 +80,28 @@ npm install dsh-web-search-workbuddy
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml
 
-# 1. 插入本插件（零配置即可工作）
+# 1. 关闭 DSH 默认的 DeepSeek 搜索提供器（避免残留或误走官方搜索）
+- id: web-search-deepseek
+  disabled: true
+- id: web-deepseek-api
+  disabled: true
+# （可选）隐藏界面中默认的 DeepSeek 搜索设置页
+- id: ui-settings-web-search
+  disabled: true
+
+# 2. 插入本插件（零配置即可自动复用当前模型路由的 baseURL 与 apiKeyEnv）
 - insert:
     - id: web-search-workbuddy
       name: dsh-web-search-workbuddy
 
-# 2. 将 DSH 的搜索提供器固定为 workbuddy-gateway
+# 3. 将 DSH 的搜索提供器切换并固定为 workbuddy-gateway（web_fetch 仍走 http）
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
     fetchProvider: http
     searchProvider: workbuddy-gateway
 
-# 3. 保持官方 tool-web 的 search 开启（如配置了多个 agent preset，需确保每个 preset 里的 tool-web 均为 search: true）
+# 4. 保持工具入口 tool-web 开启（底层搜索流量已切到 workbuddy-gateway）
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
   config:
@@ -94,6 +109,8 @@ npm install dsh-web-search-workbuddy
     search: true
     searchTimeoutMs: 60000
 ```
+
+> 说明：仅配置 `searchProvider: workbuddy-gateway` 也会强制路由到本插件，但**强烈建议同时禁用 `web-search-deepseek` 与 `web-deepseek-api`**，彻底关闭默认搜索提供器，避免多余的 `DEEPSEEK_API_KEY` 凭据检查或配置歧义。
 
 如果希望在默认模式下设置全局搜索过滤默认值（所有搜索共享），可在 `web-search-workbuddy` 下按需补充 `config`：
 
@@ -112,11 +129,20 @@ npm install dsh-web-search-workbuddy
 
 DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。开启 `modelControlled: true` 后，本插件会接管 `web_search` 工具注册，把 `allowedDomains` / `blockedDomains` / `freshness` / `maxResults` 开放给模型按需传入，并自动注入对应的系统提示词说明。
 
-> **⚠️ 重要**：由于 `ctx.tools.register()` 不允许同名工具重复注册，开启 `modelControlled: true` 时，**必须将全局以及所有 agent preset 中的 `@deepseek-ai/dsh-tool-web` 都设为 `search: false`**（`fetch: true` 保留不变，不影响 `web_fetch`）。
+> **⚠️ 重要**：由于 `ctx.tools.register()` 不允许同名工具重复注册，开启 `modelControlled: true` 时，**除了关闭上述默认搜索提供器外，还必须将根级以及所有 agent preset（如 `preset-standard` 等）中的 `@deepseek-ai/dsh-tool-web` 均设为 `search: false`**（`fetch: true` 保留不变，不影响 `web_fetch`）。
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml
 
+# 1. 关闭 DSH 默认搜索提供器
+- id: web-search-deepseek
+  disabled: true
+- id: web-deepseek-api
+  disabled: true
+- id: ui-settings-web-search
+  disabled: true
+
+# 2. 插入本插件并开启 modelControlled
 - insert:
     - id: web-search-workbuddy
       name: dsh-web-search-workbuddy
@@ -126,13 +152,14 @@ DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。
         modelMaxQueries: 10
         modelSummaryMaxChars: 800
 
+# 3. 将搜索提供器切换到 workbuddy-gateway
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
     fetchProvider: http
     searchProvider: workbuddy-gateway
 
-# 必须关闭官方 tool-web 的 search（所有 agent preset 中同样需要 search: false）
+# 4. 必须关闭官方 tool-web 的 search（所有 agent preset 中同样需要 search: false）
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
   config:
@@ -175,10 +202,10 @@ DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。
 1. **完全重启 DSH**（修改 `cordis.patch.yml` 不支持热更新 HMR，重启后新建会话即可在工具列表看到 `web_search`）。
 2. **命令行检查配置与兼容性**：
    ```bash
-   # 检查配置树中是否已包含 web-search-workbuddy，且无 disabling / incompatible 告警
-   dsh --profile web --dump-config | grep -E "web-search-workbuddy|workbuddy-gateway"
+   # 检查默认搜索是否已禁用、搜索路由是否已切换为 workbuddy-gateway，且无 disabling / incompatible 告警
+   dsh --profile web --dump-config | grep -A 3 -E "id: (web|web-search-deepseek|web-deepseek-api|web-search-workbuddy)$"
    ```
-   正常应能看到 `searchProvider: workbuddy-gateway` 和 `name: dsh-web-search-workbuddy`。
+   正常应能看到：`web-search-deepseek` 与 `web-deepseek-api` 均带 `disabled: true`，`web` 下 `searchProvider: workbuddy-gateway`，且 `web-search-workbuddy` 指向 `dsh-web-search-workbuddy`。
 
 ---
 
