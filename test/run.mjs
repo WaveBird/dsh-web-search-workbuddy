@@ -533,6 +533,31 @@ console.log("\n== D3. 非 pi-ai 会话路由回退 + 单侧显式 apiKeyEnv ==")
   console.log("✓ 非 pi-ai 会话路由自动回退唯一 llm-pi-ai 路由，ready() 与 search() 均正常");
 }
 
+{
+  // 仅显式配置 apiKeyEnv（省略 baseURL 且无 llm 服务）：ready() 应返回 true，且 baseURL 兜底 http://127.0.0.1:7864
+  const { ctx, registered } = makeCtx({ withSessionRoute: false });
+  const origGet = ctx.get.bind(ctx);
+  ctx.get = (svc) => (svc === "llm" ? undefined : origGet(svc));
+  apply(ctx, cfgOf({ apiKeyEnv: "WORKBUDDY_MANNAGER_CN_API_KEY" }));
+  const p = registered[0];
+  assert.equal(await p.ready(), true, "单侧显式 apiKeyEnv 时 ready() 为 true");
+
+  const origFetch = globalThis.fetch;
+  let capturedUrl = null;
+  globalThis.fetch = async (url) => {
+    capturedUrl = String(url);
+    return new Response(searchOK, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const out = await p.search({ query: "default base url" });
+    assert.equal(capturedUrl, "http://127.0.0.1:7864/v1/tools/search", "缺省 baseURL 兜底 http://127.0.0.1:7864");
+    assert.equal(out.sources.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  console.log("✓ 单侧显式 apiKeyEnv：ready() 为 true，baseURL 兜底 http://127.0.0.1:7864");
+}
+
 console.log("\n== E. peerDependencies 范围约束（避免精确钉死单一 DSH rc） ==");
 {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
