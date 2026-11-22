@@ -127,6 +127,7 @@ const cfgOf = (over = {}) => {
     ...(over.blockedDomains !== undefined ? { blockedDomains: over.blockedDomains } : {}),
     ...(over.freshness !== undefined ? { freshness: over.freshness } : {}),
     ...(over.maxResults !== undefined ? { maxResults: over.maxResults } : {}),
+    ...(over.maxRetries !== undefined ? { maxRetries: over.maxRetries } : {}),
     ...(over.modelControlled !== undefined ? { modelControlled: over.modelControlled } : {}),
     ...(over.modelMaxQueries !== undefined ? { modelMaxQueries: over.modelMaxQueries } : {}),
     ...(over.modelSummaryMaxChars !== undefined ? { modelSummaryMaxChars: over.modelSummaryMaxChars } : {}),
@@ -136,6 +137,7 @@ const cfgOf = (over = {}) => {
     ...raw,
     timeoutMs: { get: () => over.timeoutMs ?? 5000 },
     maxResults: { get: () => over.maxResults ?? 5 },
+    maxRetries: { get: () => over.maxRetries ?? 0 },
   };
 };
 
@@ -587,6 +589,64 @@ console.log("\n== D4. blockedDomains 本地结果后过滤（精确域名 + 子�
     globalThis.fetch = origFetch;
   }
   console.log("✓ blockedDomains 同时在结果侧过滤精确域名与 www. 等子域名");
+}
+
+console.log("\n== D5. 自动重试（默认最多 2 次，可配置 maxRetries，界面卡片 + 日志提示） ==");
+{
+  const warnLogs = [];
+  const toolDefs = [];
+  const toolHarness = {
+    tools: { register: (def, opts) => { toolDefs.push({ def, opts }); return () => {}; } },
+    systemPrompt: { section: () => () => {} },
+  };
+  const { ctx } = makeCtx({ toolHarness });
+  const origGet = ctx.get.bind(ctx);
+  ctx.get = (svc) => (svc === "logger" ? { warn: (m) => warnLogs.push(m) } : origGet(svc));
+
+  // 使用真实 Config 默认值（maxRetries = 2）
+  const rawCfg = Config({ modelControlled: true });
+  apply(ctx, rawCfg);
+
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls <= 2) {
+      return new Response("bad gateway", { status: 502 });
+    }
+    return new Response(searchOK, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const tool = toolDefs[0].def;
+    const out = await tool.execute({ queries: ["retry test"] }, { signal: new AbortController().signal });
+    assert.equal(calls, 3, "默认最多 2 次重试（1 次初始 + 2 次重试）");
+    assert.equal(warnLogs.length, 2, "每次重试记录 logger.warn");
+    assert.match(warnLogs[0], /retrying \(1\/2\)/);
+    assert.match(warnLogs[1], /retrying \(2\/2\)/);
+    const meta = tool.output.presentationMeta({}, out);
+    assert.equal(meta.retries, 2);
+    const view = tool.presentResult({ queries: ["retry test"] }, { isError: false, meta });
+    assert.match(view.title, /\(重试 2 次\)/, "界面卡片标题显示重试次数");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  // 429 配额耗尽不应重试
+  let quotaCalls = 0;
+  globalThis.fetch = async () => {
+    quotaCalls += 1;
+    return new Response(quota429, { status: 429, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await assert.rejects(
+      () => toolDefs[0].def.execute({ queries: ["quota"] }, { signal: new AbortController().signal }),
+      (e) => e instanceof WebError && /quota exhausted/.test(e.message),
+    );
+    assert.equal(quotaCalls, 1, "429 quota_web_search 不重试");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  console.log("✓ 默认最多重试 2 次，logger.warn 与卡片标题提示重试次数，429 配额不重试");
 }
 
 console.log("\n== E. peerDependencies 范围约束（避免精确钉死单一 DSH rc） ==");

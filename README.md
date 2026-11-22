@@ -263,6 +263,7 @@ DSH 官方的 `@deepseek-ai/dsh-tool-web` 只向模型暴露 `queries` 参数。
 | `baseURL` | `string` | 自动派生 | `workbuddy-manager` 根地址（例如 `http://127.0.0.1:7864`）。省略时自动取当前模型路由 `baseURL` 并剥离末尾 `/v1/` |
 | `apiKeyEnv` | `string` | 自动派生 | 凭据引用名 / 环境变量名（存放 `wbk_` 密钥）。省略时自动取当前模型路由的 `apiKeyEnv` |
 | `timeoutMs` | `number` | `30000` | 单次搜索超时时间（毫秒，最小 `1000`；网关侧单账号上游超时上限为 20s） |
+| `maxRetries` | `number` | `2` | 遇到瞬时网络错误、超时或 5xx（408/500/502/503/504）时的最大自动重试次数（`0..5`，`0` 表示不重试）；重试时会打印告警日志并在结果卡片标注重试次数 |
 | `maxResults` | `number` | `5` | 默认最大返回条数（范围 `1..20`）；单次请求的 `maxResults` 优先 |
 | `type` | `string` | `"text2text"` | agenttool 请求类型（`0057` 网关上游固定使用 `text2text`） |
 | `allowedDomains` | `string[]` | 未设置 | 仅返回这些域名的结果（自动去除协议与路径并去重） |

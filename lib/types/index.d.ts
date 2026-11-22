@@ -14,6 +14,8 @@ export interface WebSearchWorkBuddyConfig {
   apiKeyEnv: string;
   /** Single-request timeout in ms. */
   timeoutMs: number;
+  /** Max automatic retries on transient failures (0..5). Defaults to 2. */
+  maxRetries: number;
   /** Default max_results when the search request omits maxResults (1..20). */
   maxResults: number;
   /** agenttool request type; fixed "text2text" upstream. Defaults to "text2text". */
