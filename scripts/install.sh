@@ -218,16 +218,16 @@ DSH_VER_CHECK="$(check_dsh_semver "$DSH_VERSION")"
 
 case "$DSH_VER_CHECK" in
   OK)
-    ok "DSH 检查通过: $DSH_BIN (版本: $DSH_VERSION，满足 >=0.2.2-rc.1 <0.3.0-0)"
+    ok "DSH 检查通过: $DSH_BIN (版本: ${DSH_VERSION}，满足 >=0.2.2-rc.1 <0.3.0-0)"
     ;;
   TOO_LOW)
     fail_with_guide \
-      "当前 DSH 版本为 $DSH_VERSION，低于本插件最低要求 0.2.2-rc.1。" \
+      "当前 DSH 版本为 ${DSH_VERSION}，低于本插件最低要求 0.2.2-rc.1。" \
       "请先将 DeepSeek Harness 升级到 0.2.2-rc.1 及以上的 0.2.x 版本（推荐 0.2.2-rc.5+）后再运行本脚本。"
     ;;
   TOO_HIGH)
     fail_with_guide \
-      "当前 DSH 版本为 $DSH_VERSION，超出了本插件声明的兼容上限 <0.3.0-0。" \
+      "当前 DSH 版本为 ${DSH_VERSION}，超出了本插件声明的兼容上限 <0.3.0-0。" \
       "0.3.x 可能存在 web seam 破坏性变更，请查看 https://github.com/WaveBird/dsh-web-search-workbuddy 是否有适配新版本 DSH 的插件更新。"
     ;;
   *)
@@ -287,7 +287,7 @@ if [ -z "$PROFILE" ]; then
   COUNT="${#PROFILES[@]}"
   if [ "$COUNT" -eq 1 ]; then
     PROFILE="${PROFILES[0]}"
-    ok "检测到唯一 DSH profile: $PROFILE，将自动安装并配置。"
+    ok "检测到唯一 DSH profile: ${PROFILE}，将自动安装并配置。"
   elif [ "$COUNT" -gt 1 ]; then
     echo "检测到多个 DSH profile："
     idx=1
@@ -302,7 +302,7 @@ if [ -z "$PROFILE" ]; then
     fi
     if ! printf '%s' "$choice" | grep -Eq '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "$COUNT" ]; then
       fail_with_guide \
-        "无效的 profile 编号: $choice（可选范围 1..$COUNT）。" \
+        "无效的 profile 编号: ${choice}（可选范围 1..${COUNT}）。" \
         "请重新运行脚本并输入列表中的数字，或直接通过 --profile <名称> 指定。"
     fi
     PROFILE="${PROFILES[$((choice - 1))]}"
@@ -327,7 +327,7 @@ PATCH_FILE="$PROFILE_DIR/cordis.patch.yml"
 # 检测目录权限
 if ! mkdir -p "$PROFILE_DIR" 2>/dev/null || [ ! -w "$PROFILE_DIR" ]; then
   fail_with_guide \
-    "目标 profile 目录不可写: $PROFILE_DIR。" \
+    "目标 profile 目录不可写: ${PROFILE_DIR}。" \
     "请检查目录权限或所有者（例如运行 ls -ld \"$PROFILE_DIR\"，必要时修复权限 chown -R \"\$(id -un)\" \"$DSH_HOME\"）后重试。"
 fi
 
@@ -387,13 +387,13 @@ if [ -f "$PATCH_FILE" ]; then
     UNREACHABLE:*)
       GW_URL="$(printf '%s' "$GATEWAY_CHECK" | cut -d: -f2-3)"
       warn_with_guide \
-        "暂无法连接到 $GW_URL（workbuddy-manager 可能尚未启动或端口不同）。" \
+        "暂无法连接到 ${GW_URL}（workbuddy-manager 可能尚未启动或端口不同）。" \
         "请在使用 web_search 前确认 workbuddy-manager 与 wb2api-go 网关已启动；如果搜索网关与聊天地址不同，请在 cordis.patch.yml 中显式配置 baseURL。"
       ;;
   esac
 else
   warn_with_guide \
-    "尚未存在 $PATCH_FILE，脚本将为你创建新配置。" \
+    "尚未存在 ${PATCH_FILE}，脚本将为你创建新配置。" \
     "如果你尚未配置 workbuddy-manager 模型路由，请在安装完成后在 DSH 设置中配置模型路由，或在 web-search-workbuddy.config 中显式指定 baseURL 与 apiKeyEnv。"
 fi
 
@@ -418,7 +418,7 @@ ok "插件安装完成。"
 # =========================================================================
 # 阶段 4：备份并更新 cordis.patch.yml + 校验配置
 # =========================================================================
-info "步骤 4/5：更新并校验 $PATCH_FILE（关闭默认 DSH 搜索并切换为 workbuddy-gateway）..."
+info "步骤 4/5：更新并校验 ${PATCH_FILE}（关闭默认 DSH 搜索并切换为 workbuddy-gateway）..."
 
 BACKUP_FILE=""
 if [ -f "$PATCH_FILE" ]; then
@@ -581,7 +581,7 @@ RUNNING_LIST="$(find_running_dsh || true)"
 
 if [ -n "$RUNNING_LIST" ]; then
   echo ""
-  warn "修改 cordis.patch.yml 需要重启 DSH（profile: $PROFILE）后才能生效。"
+  warn "修改 cordis.patch.yml 需要重启 DSH（profile: ${PROFILE}）后才能生效。"
   echo "检测到正在运行的 DSH 进程："
   while IFS=$'\t' read -r pid cmd; do
     [ -n "$pid" ] || continue
@@ -643,17 +643,17 @@ if [ -n "$RUNNING_LIST" ]; then
       sleep 2
       AFTER_LIST="$(find_running_dsh || true)"
       if { [ -n "$NEW_PID" ] && kill -0 "$NEW_PID" 2>/dev/null; } || [ -n "$AFTER_LIST" ]; then
-        ok "DSH 已重启（PID: ${NEW_PID:-见进程列表}，日志: $LOG_FILE）。请新建会话使用 web_search。"
+        ok "DSH 已重启（PID: ${NEW_PID:-见进程列表}，日志: ${LOG_FILE}）。请新建会话使用 web_search。"
       else
         warn_with_guide \
-          "后台重启进程未能持续运行，请查看日志: $LOG_FILE。" \
+          "后台重启进程未能持续运行，请查看日志: ${LOG_FILE}。" \
           "请在终端手动重新启动：$PRIMARY_CMD"
       fi
     fi
   else
-    info "已跳过重启。请稍后手动重启 DSH（profile: $PROFILE）使配置生效。"
+    info "已跳过重启。请稍后手动重启 DSH（profile: ${PROFILE}）使配置生效。"
   fi
 else
   echo ""
-  ok "全部完成！未检测到正在运行的 DSH（profile: $PROFILE）进程，下次启动 dsh $PROFILE 即自动生效。"
+  ok "全部完成！未检测到正在运行的 DSH（profile: ${PROFILE}）进程，下次启动 dsh $PROFILE 即自动生效。"
 fi
